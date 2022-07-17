@@ -51,6 +51,10 @@ public class SubscriptionAssignmentView {
         return subscriptionAssignments.size();
     }
 
+    public int getAssignmentsCount(SubscriptionName subscriptionName) {
+        return subscriptionAssignments.getOrDefault(subscriptionName, Collections.emptySet()).size();
+    }
+
     public Set<String> getConsumerNodes() {
         return ImmutableSet.copyOf(consumerNodeAssignments.keySet());
     }

@@ -21,6 +21,7 @@ import pl.allegro.tech.hermes.consumers.consumer.batch.MessageBatchFactory;
 import pl.allegro.tech.hermes.consumers.consumer.batch.MessageBatchReceiver;
 import pl.allegro.tech.hermes.consumers.consumer.batch.MessageBatchingResult;
 import pl.allegro.tech.hermes.consumers.consumer.converter.MessageConverterResolver;
+import pl.allegro.tech.hermes.consumers.consumer.load.SubscriptionLoadReporter;
 import pl.allegro.tech.hermes.consumers.consumer.offset.OffsetQueue;
 import pl.allegro.tech.hermes.consumers.consumer.offset.SubscriptionPartitionOffset;
 import pl.allegro.tech.hermes.consumers.consumer.rate.BatchConsumerRateLimiter;
@@ -51,6 +52,7 @@ public class BatchConsumer implements Consumer {
     private final MessageConverterResolver messageConverterResolver;
     private final CompositeMessageContentWrapper compositeMessageContentWrapper;
     private final Trackers trackers;
+    private final SubscriptionLoadReporter subscriptionLoadReporter;
 
     private Topic topic;
     private OffsetQueue offsetQueue;
@@ -71,7 +73,7 @@ public class BatchConsumer implements Consumer {
                          Trackers trackers,
                          Subscription subscription,
                          Topic topic,
-                         ConfigFactory configs) {
+                         ConfigFactory configs, SubscriptionLoadReporter subscriptionLoadReporter) {
         this.messageReceiverFactory = messageReceiverFactory;
         this.sender = sender;
         this.batchFactory = batchFactory;
@@ -79,6 +81,7 @@ public class BatchConsumer implements Consumer {
         this.subscription = subscription;
         this.hermesMetrics = hermesMetrics;
         this.configs = configs;
+        this.subscriptionLoadReporter = subscriptionLoadReporter;
         this.monitoring = new BatchMonitoring(hermesMetrics, trackers);
         this.messageConverterResolver = messageConverterResolver;
         this.compositeMessageContentWrapper = compositeMessageContentWrapper;
@@ -213,6 +216,7 @@ public class BatchConsumer implements Consumer {
         try (Timer.Context timer = hermesMetrics.subscriptionLatencyTimer(subscription).time()) {
             retryer.call(() -> {
                 signalsInterrupt.run();
+                subscriptionLoadReporter.recordMessagesOut(subscription.getQualifiedName(), batch.size());
                 return sender.send(
                         batch,
                         subscription.getEndpoint(),

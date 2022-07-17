@@ -1,63 +1,40 @@
-package pl.allegro.tech.hermes.consumers.supervisor.workload.selective;
+package pl.allegro.tech.hermes.consumers.supervisor.workload;
 
 import com.codahale.metrics.Timer;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.google.common.collect.Sets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import pl.allegro.tech.hermes.common.config.ConfigFactory;
 import pl.allegro.tech.hermes.common.metric.HermesMetrics;
 import pl.allegro.tech.hermes.consumers.registry.ConsumerNodesRegistry;
 import pl.allegro.tech.hermes.consumers.subscription.cache.SubscriptionsCache;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.ClusterAssignmentCache;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.ConsumerAssignmentRegistry;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.SubscriptionAssignmentView;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.WorkDistributionChanges;
 import pl.allegro.tech.hermes.domain.workload.constraints.ConsumersWorkloadConstraints;
-import pl.allegro.tech.hermes.domain.workload.constraints.WorkloadConstraints;
 import pl.allegro.tech.hermes.domain.workload.constraints.WorkloadConstraintsRepository;
 
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
 
-import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_CONSUMERS_PER_SUBSCRIPTION;
-import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_MAX_SUBSCRIPTIONS_PER_CONSUMER;
-
-public class BalancingJob implements Runnable {
+class BalancingJob implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(BalancingJob.class);
 
     private final ConsumerNodesRegistry consumersRegistry;
-    private final ConfigFactory configFactory;
     private final SubscriptionsCache subscriptionsCache;
     private final ClusterAssignmentCache clusterAssignmentCache;
     private final ConsumerAssignmentRegistry consumerAssignmentRegistry;
-    private final SelectiveWorkBalancer workBalancer;
+    private final WorkBalancer workBalancer;
     private final HermesMetrics metrics;
     private final String kafkaCluster;
     private final WorkloadConstraintsRepository workloadConstraintsRepository;
-    private final ScheduledExecutorService executorService;
-
-    private final int intervalSeconds;
-
-    private ScheduledFuture job;
-
     private final BalancingJobMetrics balancingMetrics = new BalancingJobMetrics();
 
     BalancingJob(ConsumerNodesRegistry consumersRegistry,
-                 ConfigFactory configFactory,
                  SubscriptionsCache subscriptionsCache,
                  ClusterAssignmentCache clusterAssignmentCache,
                  ConsumerAssignmentRegistry consumerAssignmentRegistry,
-                 SelectiveWorkBalancer workBalancer,
+                 WorkBalancer workBalancer,
                  HermesMetrics metrics,
-                 int intervalSeconds,
                  String kafkaCluster,
                  WorkloadConstraintsRepository workloadConstraintsRepository) {
         this.consumersRegistry = consumersRegistry;
-        this.configFactory = configFactory;
         this.subscriptionsCache = subscriptionsCache;
         this.clusterAssignmentCache = clusterAssignmentCache;
         this.consumerAssignmentRegistry = consumerAssignmentRegistry;
@@ -65,26 +42,20 @@ public class BalancingJob implements Runnable {
         this.metrics = metrics;
         this.kafkaCluster = kafkaCluster;
         this.workloadConstraintsRepository = workloadConstraintsRepository;
-        ThreadFactory threadFactory = new ThreadFactoryBuilder()
-                .setNameFormat("BalancingExecutor-%d").build();
-        this.executorService = Executors.newSingleThreadScheduledExecutor(threadFactory);
-        this.intervalSeconds = intervalSeconds;
-
         metrics.registerGauge(
-                gaugeName(kafkaCluster, "selective.all-assignments"),
+                gaugeName(kafkaCluster, ".all-assignments"),
                 () -> balancingMetrics.allAssignments
         );
-
         metrics.registerGauge(
-                gaugeName(kafkaCluster, "selective.missing-resources"),
+                gaugeName(kafkaCluster, ".missing-resources"),
                 () -> balancingMetrics.missingResources
         );
         metrics.registerGauge(
-                gaugeName(kafkaCluster, ".selective.deleted-assignments"),
+                gaugeName(kafkaCluster, ".deleted-assignments"),
                 () -> balancingMetrics.deletedAssignments
         );
         metrics.registerGauge(
-                gaugeName(kafkaCluster, ".selective.created-assignments"),
+                gaugeName(kafkaCluster, ".created-assignments"),
                 () -> balancingMetrics.createdAssignments
         );
     }
@@ -104,26 +75,18 @@ public class BalancingJob implements Runnable {
 
                     SubscriptionAssignmentView initialState = clusterAssignmentCache.createSnapshot();
 
-                    ConsumersWorkloadConstraints constraints = workloadConstraintsRepository.getConsumersWorkloadConstraints();
-                    WorkloadConstraints workloadConstraints = new WorkloadConstraints(
-                            constraints.getSubscriptionConstraints(),
-                            constraints.getTopicConstraints(),
-                            configFactory.getIntProperty(CONSUMER_WORKLOAD_CONSUMERS_PER_SUBSCRIPTION),
-                            configFactory.getIntProperty(CONSUMER_WORKLOAD_MAX_SUBSCRIPTIONS_PER_CONSUMER),
-                            consumersRegistry.listConsumerNodes().size());
-
                     WorkBalancingResult work = workBalancer.balance(
                             subscriptionsCache.listActiveSubscriptionNames(),
                             consumersRegistry.listConsumerNodes(),
                             initialState,
-                            workloadConstraints);
+                            prepareWorkloadConstraints()
+                    );
 
                     if (consumersRegistry.isLeader()) {
-                        logger.info("Applying workload balance changes {}", work.toString());
-                        WorkDistributionChanges changes =
-                                consumerAssignmentRegistry.updateAssignments(initialState, work.getAssignmentsView());
-
-                        logger.info("Finished workload balance {}, {}", work.toString(), changes.toString());
+                        logger.info("Applying workload balance changes");
+                        WorkDistributionChanges changes = calculateWorkDistributionChanges(initialState, work);
+                        applyWorkloadChanges(changes, work);
+                        logger.info("Finished workload balance");
 
                         clusterAssignmentCache.refresh(); // refresh cache with just stored data
 
@@ -140,14 +103,35 @@ public class BalancingJob implements Runnable {
         }
     }
 
-    public void start() {
-        job = executorService.scheduleAtFixedRate(this, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+    private WorkloadConstraints prepareWorkloadConstraints() {
+        ConsumersWorkloadConstraints constraints = workloadConstraintsRepository.getConsumersWorkloadConstraints();
+        return new WorkloadConstraints(
+                constraints.getSubscriptionConstraints(),
+                constraints.getTopicConstraints()
+        );
     }
 
-    public void stop() throws InterruptedException {
-        job.cancel(false);
-        executorService.shutdown();
-        executorService.awaitTermination(1, TimeUnit.MINUTES);
+    private WorkDistributionChanges calculateWorkDistributionChanges(SubscriptionAssignmentView initialState,
+                                                                     WorkBalancingResult workBalancingResult) {
+        SubscriptionAssignmentView balancedState = workBalancingResult.getAssignmentsView();
+        SubscriptionAssignmentView deletions = initialState.deletions(balancedState);
+        SubscriptionAssignmentView additions = initialState.additions(balancedState);
+        Sets.SetView<String> modifiedConsumerNodes = Sets.union(
+                deletions.getConsumerNodes(),
+                additions.getConsumerNodes()
+        );
+        return new WorkDistributionChanges(
+                deletions.getAllAssignments().size(),
+                additions.getAllAssignments().size(),
+                modifiedConsumerNodes
+        );
+    }
+
+    private void applyWorkloadChanges(WorkDistributionChanges changes, WorkBalancingResult workBalancingResult) {
+        SubscriptionAssignmentView balancedState = workBalancingResult.getAssignmentsView();
+        for (String consumerId : changes.getModifiedConsumerNodes()) {
+            consumerAssignmentRegistry.updateAssignments(consumerId, balancedState.getSubscriptionsForConsumerNode(consumerId));
+        }
     }
 
     private void updateMetrics(WorkBalancingResult balancingResult, WorkDistributionChanges changes) {
@@ -172,6 +156,31 @@ public class BalancingJob implements Runnable {
             this.missingResources = 0;
             this.deletedAssignments = 0;
             this.createdAssignments = 0;
+        }
+    }
+
+    private static class WorkDistributionChanges {
+
+        private final int assignmentsDeleted;
+        private final int assignmentsCreated;
+        private final Set<String> modifiedConsumerNodes;
+
+        WorkDistributionChanges(int assignmentsDeleted, int assignmentsCreated, Set<String> modifiedConsumerNodes) {
+            this.assignmentsDeleted = assignmentsDeleted;
+            this.assignmentsCreated = assignmentsCreated;
+            this.modifiedConsumerNodes = modifiedConsumerNodes;
+        }
+
+        int getDeletedAssignmentsCount() {
+            return assignmentsDeleted;
+        }
+
+        int getCreatedAssignmentsCount() {
+            return assignmentsCreated;
+        }
+
+        Set<String> getModifiedConsumerNodes() {
+            return modifiedConsumerNodes;
         }
     }
 }

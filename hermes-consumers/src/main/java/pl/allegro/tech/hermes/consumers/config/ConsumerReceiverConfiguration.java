@@ -6,6 +6,7 @@ import pl.allegro.tech.hermes.common.config.ConfigFactory;
 import pl.allegro.tech.hermes.common.kafka.KafkaNamesMapper;
 import pl.allegro.tech.hermes.common.message.wrapper.CompositeMessageContentWrapper;
 import pl.allegro.tech.hermes.common.metric.HermesMetrics;
+import pl.allegro.tech.hermes.consumers.consumer.load.SubscriptionLoadReporter;
 import pl.allegro.tech.hermes.consumers.consumer.offset.ConsumerPartitionAssignmentState;
 import pl.allegro.tech.hermes.consumers.consumer.offset.OffsetQueue;
 import pl.allegro.tech.hermes.consumers.consumer.receiver.ReceiverFactory;
@@ -30,7 +31,8 @@ public class ConsumerReceiverConfiguration {
                                                        KafkaNamesMapper kafkaNamesMapper,
                                                        FilterChainFactory filterChainFactory,
                                                        Trackers trackers,
-                                                       ConsumerPartitionAssignmentState consumerPartitionAssignmentState) {
+                                                       ConsumerPartitionAssignmentState consumerPartitionAssignmentState,
+                                                       SubscriptionLoadReporter subscriptionLoadReporter) {
         return new KafkaMessageReceiverFactory(
                 configs,
                 messageConverterFactory,
@@ -39,7 +41,8 @@ public class ConsumerReceiverConfiguration {
                 kafkaNamesMapper,
                 filterChainFactory,
                 trackers,
-                consumerPartitionAssignmentState
+                consumerPartitionAssignmentState,
+                subscriptionLoadReporter
         );
     }
 

@@ -1,37 +1,41 @@
-package pl.allegro.tech.hermes.consumers.supervisor.workload.selective;
+package pl.allegro.tech.hermes.consumers.supervisor.workload;
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import pl.allegro.tech.hermes.api.Subscription;
 import pl.allegro.tech.hermes.api.SubscriptionName;
 import pl.allegro.tech.hermes.api.Topic;
+import pl.allegro.tech.hermes.common.admin.AdminOperationsCallback;
 import pl.allegro.tech.hermes.common.admin.zookeeper.ZookeeperAdminCache;
 import pl.allegro.tech.hermes.common.config.ConfigFactory;
+import pl.allegro.tech.hermes.common.config.Configs;
 import pl.allegro.tech.hermes.common.metric.HermesMetrics;
 import pl.allegro.tech.hermes.consumers.registry.ConsumerNodesRegistry;
 import pl.allegro.tech.hermes.consumers.subscription.cache.SubscriptionsCache;
 import pl.allegro.tech.hermes.consumers.supervisor.ConsumersSupervisor;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.ClusterAssignmentCache;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.ConsumerAssignmentCache;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.ConsumerAssignmentRegistry;
-import pl.allegro.tech.hermes.consumers.supervisor.workload.SupervisorController;
 import pl.allegro.tech.hermes.domain.notifications.InternalNotificationsBus;
+import pl.allegro.tech.hermes.domain.notifications.SubscriptionCallback;
+import pl.allegro.tech.hermes.domain.notifications.TopicCallback;
 import pl.allegro.tech.hermes.domain.workload.constraints.WorkloadConstraintsRepository;
 
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_AUTO_REBALANCE;
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_CONSUMERS_PER_SUBSCRIPTION;
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_MAX_SUBSCRIPTIONS_PER_CONSUMER;
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_NODE_ID;
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_WORKLOAD_REBALANCE_INTERVAL;
-import static pl.allegro.tech.hermes.common.config.Configs.KAFKA_CLUSTER_NAME;
 
-public class SelectiveSupervisorController implements SupervisorController {
+public class WorkloadSupervisor implements SubscriptionCallback, TopicCallback, SubscriptionAssignmentAware, AdminOperationsCallback {
 
-    private static final Logger logger = LoggerFactory.getLogger(SelectiveSupervisorController.class);
+    private static final Logger logger = LoggerFactory.getLogger(WorkloadSupervisor.class);
 
     private final ConsumersSupervisor supervisor;
     private final InternalNotificationsBus notificationsBus;
@@ -41,22 +45,24 @@ public class SelectiveSupervisorController implements SupervisorController {
     private final BalancingJob balancingJob;
     private final ZookeeperAdminCache adminCache;
     private final ConfigFactory configFactory;
-
     private final ExecutorService assignmentExecutor;
+    private final ScheduledExecutorService rebalanceScheduler;
+    private final int intervalSeconds;
 
-    public SelectiveSupervisorController(ConsumersSupervisor supervisor,
-                                         InternalNotificationsBus notificationsBus,
-                                         SubscriptionsCache subscriptionsCache,
-                                         ConsumerAssignmentCache assignmentCache,
-                                         ConsumerAssignmentRegistry consumerAssignmentRegistry,
-                                         ClusterAssignmentCache clusterAssignmentCache,
-                                         ConsumerNodesRegistry consumersRegistry,
-                                         ZookeeperAdminCache adminCache,
-                                         ExecutorService assignmentExecutor,
-                                         ConfigFactory configFactory,
-                                         HermesMetrics metrics,
-                                         WorkloadConstraintsRepository workloadConstraintsRepository) {
-
+    public WorkloadSupervisor(ConsumersSupervisor supervisor,
+                              InternalNotificationsBus notificationsBus,
+                              SubscriptionsCache subscriptionsCache,
+                              ConsumerAssignmentCache assignmentCache,
+                              ConsumerAssignmentRegistry assignmentRegistry,
+                              ClusterAssignmentCache clusterAssignmentCache,
+                              ConsumerNodesRegistry consumersRegistry,
+                              ZookeeperAdminCache adminCache,
+                              ExecutorService assignmentExecutor,
+                              ConfigFactory configFactory,
+                              HermesMetrics metrics,
+                              WorkloadConstraintsRepository workloadConstraintsRepository,
+                              WorkBalancer workBalancer) {
+        String clusterName = configFactory.getStringProperty(Configs.KAFKA_CLUSTER_NAME);
         this.supervisor = supervisor;
         this.notificationsBus = notificationsBus;
         this.subscriptionsCache = subscriptionsCache;
@@ -67,15 +73,18 @@ public class SelectiveSupervisorController implements SupervisorController {
         this.configFactory = configFactory;
         this.balancingJob = new BalancingJob(
                 consumersRegistry,
-                configFactory,
                 subscriptionsCache,
                 clusterAssignmentCache,
-                consumerAssignmentRegistry,
-                new SelectiveWorkBalancer(),
+                assignmentRegistry,
+                workBalancer,
                 metrics,
-                configFactory.getIntProperty(CONSUMER_WORKLOAD_REBALANCE_INTERVAL),
-                configFactory.getStringProperty(KAFKA_CLUSTER_NAME),
-                workloadConstraintsRepository);
+                clusterName,
+                workloadConstraintsRepository
+        );
+        ThreadFactory threadFactory = new ThreadFactoryBuilder()
+                .setNameFormat("BalancingExecutor-%d").build();
+        this.rebalanceScheduler = Executors.newSingleThreadScheduledExecutor(threadFactory);
+        this.intervalSeconds = configFactory.getIntProperty(CONSUMER_WORKLOAD_REBALANCE_INTERVAL);
     }
 
     @Override
@@ -110,13 +119,12 @@ public class SelectiveSupervisorController implements SupervisorController {
     @Override
     public void onTopicChanged(Topic topic) {
         for (Subscription subscription : subscriptionsCache.subscriptionsOfTopic(topic.getName())) {
-            if(assignmentCache.isAssignedTo(subscription.getQualifiedName())) {
+            if (assignmentCache.isAssignedTo(subscription.getQualifiedName())) {
                 supervisor.updateTopic(subscription, topic);
             }
         }
     }
 
-    @Override
     public void start() throws Exception {
         long startTime = System.currentTimeMillis();
 
@@ -129,7 +137,7 @@ public class SelectiveSupervisorController implements SupervisorController {
 
         supervisor.start();
         if (configFactory.getBooleanProperty(CONSUMER_WORKLOAD_AUTO_REBALANCE)) {
-            balancingJob.start();
+            rebalanceScheduler.scheduleAtFixedRate(balancingJob, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
         } else {
             logger.info("Automatic workload rebalancing is disabled.");
         }
@@ -143,15 +151,14 @@ public class SelectiveSupervisorController implements SupervisorController {
                         CONSUMER_WORKLOAD_MAX_SUBSCRIPTIONS_PER_CONSUMER));
     }
 
-    @Override
-    public Set<SubscriptionName> assignedSubscriptions() {
-        return assignmentCache.getConsumerSubscriptions();
+    public void shutdown() throws Exception {
+        rebalanceScheduler.shutdown();
+        rebalanceScheduler.awaitTermination(1, TimeUnit.MINUTES);
+        supervisor.shutdown();
     }
 
-    @Override
-    public void shutdown() throws InterruptedException {
-        balancingJob.stop();
-        supervisor.shutdown();
+    public Set<SubscriptionName> assignedSubscriptions() {
+        return assignmentCache.getConsumerSubscriptions();
     }
 
     @Override

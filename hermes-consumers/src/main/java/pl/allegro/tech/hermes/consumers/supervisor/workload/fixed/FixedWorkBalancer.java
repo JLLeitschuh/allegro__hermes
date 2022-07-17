@@ -1,11 +1,13 @@
-package pl.allegro.tech.hermes.consumers.supervisor.workload.selective;
+package pl.allegro.tech.hermes.consumers.supervisor.workload.fixed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import pl.allegro.tech.hermes.api.SubscriptionName;
 import pl.allegro.tech.hermes.consumers.supervisor.workload.SubscriptionAssignment;
 import pl.allegro.tech.hermes.consumers.supervisor.workload.SubscriptionAssignmentView;
-import pl.allegro.tech.hermes.domain.workload.constraints.WorkloadConstraints;
+import pl.allegro.tech.hermes.consumers.supervisor.workload.WorkBalancer;
+import pl.allegro.tech.hermes.consumers.supervisor.workload.WorkBalancingResult;
+import pl.allegro.tech.hermes.consumers.supervisor.workload.WorkloadConstraints;
 
 import java.util.Iterator;
 import java.util.List;
@@ -15,10 +17,19 @@ import java.util.stream.Stream;
 import static java.util.Comparator.comparingInt;
 import static java.util.stream.Collectors.toList;
 
-public class SelectiveWorkBalancer {
+public class FixedWorkBalancer implements WorkBalancer {
 
-    private static final Logger logger = LoggerFactory.getLogger(SelectiveWorkBalancer.class);
+    private static final Logger logger = LoggerFactory.getLogger(FixedWorkBalancer.class);
 
+    private final int consumersPerSubscription;
+    private final int maxSubscriptionsPerConsumer;
+
+    public FixedWorkBalancer(int consumersPerSubscription, int maxSubscriptionsPerConsumer) {
+        this.consumersPerSubscription = consumersPerSubscription;
+        this.maxSubscriptionsPerConsumer = maxSubscriptionsPerConsumer;
+    }
+
+    @Override
     public WorkBalancingResult balance(List<SubscriptionName> subscriptions,
                                        List<String> activeConsumerNodes,
                                        SubscriptionAssignmentView currentState,
@@ -29,16 +40,19 @@ public class SelectiveWorkBalancer {
         List<SubscriptionName> newSubscriptions = findNewSubscriptions(currentState, subscriptions);
         List<String> newConsumers = findNewConsumers(currentState, activeConsumerNodes);
 
+        RequiredConsumersCalculator requiredConsumerCountCalculator = new RequiredConsumersCalculator(
+                consumersPerSubscription,
+                constraints,
+                activeConsumerNodes.size()
+        );
+
         SubscriptionAssignmentView balancedState =
-                balance(currentState, removedSubscriptions, inactiveConsumers, newSubscriptions, newConsumers, constraints);
+                balance(currentState, removedSubscriptions, inactiveConsumers, newSubscriptions, newConsumers, requiredConsumerCountCalculator);
 
-        log(subscriptions, activeConsumerNodes, currentState, balancedState);
-
-        return new WorkBalancingResult.Builder(balancedState)
-                .withSubscriptionsStats(subscriptions.size(), removedSubscriptions.size(), newSubscriptions.size())
-                .withConsumersStats(activeConsumerNodes.size(), inactiveConsumers.size(), newConsumers.size())
-                .withMissingResources(countMissingResources(subscriptions, balancedState, constraints))
-                .build();
+        return new WorkBalancingResult(
+                balancedState,
+                countMissingResources(subscriptions, balancedState, requiredConsumerCountCalculator)
+        );
     }
 
     private SubscriptionAssignmentView balance(SubscriptionAssignmentView currentState,
@@ -46,14 +60,14 @@ public class SelectiveWorkBalancer {
                                                List<String> inactiveConsumers,
                                                List<SubscriptionName> newSubscriptions,
                                                List<String> newConsumers,
-                                               WorkloadConstraints constraints) {
+                                               RequiredConsumersCalculator requiredConsumerCountCalculator) {
         return currentState.transform((state, transformer) -> {
             removedSubscriptions.forEach(transformer::removeSubscription);
             inactiveConsumers.forEach(transformer::removeConsumerNode);
             newSubscriptions.forEach(transformer::addSubscription);
             newConsumers.forEach(transformer::addConsumerNode);
-            minimizeWorkload(state, transformer, constraints);
-            AvailableWork.stream(state, constraints)
+            minimizeWorkload(state, transformer, requiredConsumerCountCalculator);
+            AvailableWork.stream(state, requiredConsumerCountCalculator, maxSubscriptionsPerConsumer)
                     .forEach(transformer::addAssignment);
             equalizeWorkload(state, transformer);
         });
@@ -61,38 +75,38 @@ public class SelectiveWorkBalancer {
 
     private void minimizeWorkload(SubscriptionAssignmentView state,
                                   SubscriptionAssignmentView.Transformer transformer,
-                                  WorkloadConstraints workloadConstraints) {
+                                  RequiredConsumersCalculator requiredConsumerCountCalculator) {
         state.getSubscriptions()
                 .stream()
-                .flatMap(subscriptionName -> findRedundantAssignments(state, subscriptionName, workloadConstraints))
+                .flatMap(subscriptionName -> findRedundantAssignments(state, subscriptionName, requiredConsumerCountCalculator))
                 .forEach(transformer::removeAssignment);
     }
 
     private Stream<SubscriptionAssignment> findRedundantAssignments(SubscriptionAssignmentView state,
                                                                     SubscriptionName subscriptionName,
-                                                                    WorkloadConstraints constraints) {
+                                                                    RequiredConsumersCalculator requiredConsumersCalculator) {
         final int assignedConsumers = state.getAssignmentsCountForSubscription(subscriptionName);
-        final int requiredConsumers = constraints.getConsumersNumber(subscriptionName);
+        final int requiredConsumers = requiredConsumersCalculator.calculate(subscriptionName);
         int redundantConsumers = assignedConsumers - requiredConsumers;
         if (redundantConsumers > 0) {
             Stream.Builder<SubscriptionAssignment> redundant = Stream.builder();
             Iterator<SubscriptionAssignment> iterator = state.getAssignmentsForSubscription(subscriptionName).iterator();
             while (redundantConsumers > 0 && iterator.hasNext()) {
                 SubscriptionAssignment assignment = iterator.next();
-                if (assignment.isAutoAssigned()) {
-                    redundant.add(assignment);
-                    redundantConsumers--;
-                }
+                redundant.add(assignment);
+                redundantConsumers--;
             }
             return redundant.build();
         }
         return Stream.empty();
     }
 
-    private int countMissingResources(List<SubscriptionName> subscriptions, SubscriptionAssignmentView state, WorkloadConstraints constraints) {
+    private int countMissingResources(List<SubscriptionName> subscriptions,
+                                      SubscriptionAssignmentView state,
+                                      RequiredConsumersCalculator requiredConsumersCalculator) {
         return subscriptions.stream()
                 .mapToInt(s -> {
-                    int requiredConsumers = constraints.getConsumersNumber(s);
+                    int requiredConsumers = requiredConsumersCalculator.calculate(s);
                     int subscriptionAssignments = state.getAssignmentsCountForSubscription(s);
                     int missing = requiredConsumers - subscriptionAssignments;
                     if (missing != 0) {
@@ -161,15 +175,5 @@ public class SelectiveWorkBalancer {
 
     private List<String> findNewConsumers(SubscriptionAssignmentView state, List<String> activeConsumers) {
         return activeConsumers.stream().filter(c -> !state.getConsumerNodes().contains(c)).collect(toList());
-    }
-
-    private void log(List<SubscriptionName> subscriptions, List<String> activeConsumerNodes,
-                     SubscriptionAssignmentView currentState, SubscriptionAssignmentView balancedState) {
-        logger.info("Balancing {} subscriptions across {} nodes with previous {} assignments" +
-                        " produced {} assignments",
-                subscriptions.size(),
-                activeConsumerNodes.size(),
-                currentState.getAllAssignments().size(),
-                balancedState.getAllAssignments().size());
     }
 }

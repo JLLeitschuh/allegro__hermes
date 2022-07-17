@@ -79,6 +79,10 @@ public final class AdjustableSemaphore {
         this.maxPermits = newMax;
     }
 
+    public synchronized int getMaxPermits() {
+        return this.maxPermits;
+    }
+
     /**
      * Release a permit back to the semaphore. Make sure not to double-release.
      *

@@ -9,10 +9,13 @@ import pl.allegro.tech.hermes.common.config.Configs;
 import pl.allegro.tech.hermes.common.kafka.offset.PartitionOffset;
 import pl.allegro.tech.hermes.common.metric.HermesMetrics;
 import pl.allegro.tech.hermes.consumers.consumer.converter.MessageConverterResolver;
+import pl.allegro.tech.hermes.consumers.consumer.load.LoadStatus;
+import pl.allegro.tech.hermes.consumers.consumer.load.SubscriptionLoadReporter;
 import pl.allegro.tech.hermes.consumers.consumer.offset.OffsetQueue;
 import pl.allegro.tech.hermes.consumers.consumer.offset.SubscriptionPartitionOffset;
 import pl.allegro.tech.hermes.consumers.consumer.rate.AdjustableSemaphore;
 import pl.allegro.tech.hermes.consumers.consumer.rate.SerialConsumerRateLimiter;
+import pl.allegro.tech.hermes.consumers.consumer.rate.calculator.OutputRateCalculator;
 import pl.allegro.tech.hermes.consumers.consumer.receiver.MessageReceiver;
 import pl.allegro.tech.hermes.consumers.consumer.receiver.ReceiverFactory;
 import pl.allegro.tech.hermes.consumers.consumer.receiver.UninitializedMessageReceiver;
@@ -24,6 +27,9 @@ import java.util.concurrent.TimeUnit;
 
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_INFLIGHT_SIZE;
 import static pl.allegro.tech.hermes.common.config.Configs.CONSUMER_SIGNAL_PROCESSING_INTERVAL;
+import static pl.allegro.tech.hermes.consumers.consumer.load.LoadStatus.NORMAL;
+import static pl.allegro.tech.hermes.consumers.consumer.load.LoadStatus.OVERLOADED;
+import static pl.allegro.tech.hermes.consumers.consumer.load.LoadStatus.UNDERLOADED;
 import static pl.allegro.tech.hermes.consumers.consumer.message.MessageConverter.toMessageMetadata;
 import static pl.allegro.tech.hermes.consumers.consumer.offset.SubscriptionPartitionOffset.subscriptionPartitionOffset;
 
@@ -36,6 +42,7 @@ public class SerialConsumer implements Consumer {
     private final SerialConsumerRateLimiter rateLimiter;
     private final Trackers trackers;
     private final MessageConverterResolver messageConverterResolver;
+    private final SubscriptionLoadReporter subscriptionLoadReporter;
     private final ConsumerMessageSender sender;
     private final ConfigFactory configFactory;
     private final OffsetQueue offsetQueue;
@@ -60,8 +67,8 @@ public class SerialConsumer implements Consumer {
                           Topic topic,
                           ConfigFactory configFactory,
                           OffsetQueue offsetQueue,
-                          ConsumerAuthorizationHandler consumerAuthorizationHandler) {
-
+                          ConsumerAuthorizationHandler consumerAuthorizationHandler,
+                          SubscriptionLoadReporter subscriptionLoadReporter) {
         this.defaultInflight = configFactory.getIntProperty(CONSUMER_INFLIGHT_SIZE);
         this.signalProcessingInterval = configFactory.getIntProperty(CONSUMER_SIGNAL_PROCESSING_INTERVAL);
         this.inflightSemaphore = new AdjustableSemaphore(calculateInflightSize(subscription));
@@ -74,6 +81,7 @@ public class SerialConsumer implements Consumer {
         this.consumerAuthorizationHandler = consumerAuthorizationHandler;
         this.trackers = trackers;
         this.messageConverterResolver = messageConverterResolver;
+        this.subscriptionLoadReporter = subscriptionLoadReporter;
         this.messageReceiver = new UninitializedMessageReceiver();
         this.topic = topic;
         this.sender = consumerMessageSenderFactory.create(subscription, rateLimiter, offsetQueue, inflightSemaphore::release);
@@ -89,6 +97,7 @@ public class SerialConsumer implements Consumer {
     @Override
     public void consume(Runnable signalsInterrupt) {
         try {
+            subscriptionLoadReporter.recordStatus(subscription.getQualifiedName(), calculateLoadStatus());
             do {
                 signalsInterrupt.run();
             } while (!inflightSemaphore.tryAcquire(signalProcessingInterval, TimeUnit.MILLISECONDS));
@@ -190,5 +199,20 @@ public class SerialConsumer implements Consumer {
     @Override
     public Subscription getSubscription() {
         return subscription;
+    }
+
+    private LoadStatus calculateLoadStatus() {
+        if (rateLimiter.getRateMode() != OutputRateCalculator.Mode.NORMAL) {
+            return UNDERLOADED;
+        }
+        int availablePermits = inflightSemaphore.availablePermits();
+        if (availablePermits == 0) {
+            return OVERLOADED;
+        }
+        double utilization = (double) availablePermits / inflightSemaphore.getMaxPermits();
+        if (utilization > 0.5) {
+            return UNDERLOADED;
+        }
+        return NORMAL;
     }
 }

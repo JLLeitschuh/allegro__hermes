@@ -26,7 +26,7 @@ public class SerialConsumerRateLimiter implements ConsumerRateLimiter {
 
     private final SendCounters sendCounters;
 
-    private OutputRateCalculator.Mode currentMode;
+    private volatile OutputRateCalculator.Mode currentMode;
 
     public SerialConsumerRateLimiter(Subscription subscription,
                                      OutputRateCalculatorFactory outputRateCalculatorFactory,
@@ -101,6 +101,11 @@ public class SerialConsumerRateLimiter implements ConsumerRateLimiter {
     @Override
     public void registerFailedSending() {
         sendCounters.incrementFailures();
+    }
+
+    @Override
+    public OutputRateCalculator.Mode getRateMode() {
+        return currentMode;
     }
 
     @Override

@@ -496,7 +496,8 @@ public class ConsumerMessageSenderTest {
                 hermesMetrics,
                 ASYNC_TIMEOUT_MS,
                 new FutureAsyncTimeout<>(MessageSendingResult::failedResult, Executors.newSingleThreadScheduledExecutor()),
-                Clock.systemUTC()
+                Clock.systemUTC(),
+                new NoOpSubscriptionLoadReporter()
         );
         sender.initialize();
 

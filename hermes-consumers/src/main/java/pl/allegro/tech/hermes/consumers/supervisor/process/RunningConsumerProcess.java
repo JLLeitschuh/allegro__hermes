@@ -12,20 +12,20 @@ import java.util.concurrent.Future;
 class RunningConsumerProcess {
     private static final Logger logger = LoggerFactory.getLogger(RunningConsumerProcess.class);
     
-    private ConsumerProcess process;
-    private Future executionHandle;
-    private Clock clock;
-    private Optional<Long> timeOfDeath = Optional.empty();
+    private final ConsumerProcess process;
+    private final Future executionHandle;
+    private final Clock clock;
+    private final Optional<Long> timeOfDeath;
 
     RunningConsumerProcess(ConsumerProcess process, Future executionHandle, Clock clock) {
+        this(process, executionHandle, null, clock);
+    }
+
+    private RunningConsumerProcess(ConsumerProcess process, Future executionHandle, Long killTime, Clock clock) {
         this.process = process;
         this.executionHandle = executionHandle;
         this.clock = clock;
-    }
-
-    private RunningConsumerProcess(ConsumerProcess process, Future executionHandle, long killTime, Clock clock) {
-        this(process, executionHandle, clock);
-        this.timeOfDeath = Optional.of(killTime);
+        this.timeOfDeath = Optional.ofNullable(killTime);
     }
 
     void cancel() {
@@ -53,7 +53,7 @@ class RunningConsumerProcess {
         return process;
     }
 
-    public Subscription getSubscription() {
+    Subscription getSubscription() {
         return getConsumerProcess().getSubscription();
     }
 }

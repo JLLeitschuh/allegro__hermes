@@ -11,6 +11,7 @@ import pl.allegro.tech.hermes.common.metric.HermesMetrics;
 import pl.allegro.tech.hermes.consumers.consumer.filtering.FilteredMessageHandler;
 import pl.allegro.tech.hermes.consumers.consumer.idleTime.ExponentiallyGrowingIdleTimeCalculator;
 import pl.allegro.tech.hermes.consumers.consumer.idleTime.IdleTimeCalculator;
+import pl.allegro.tech.hermes.consumers.consumer.load.SubscriptionLoadReporter;
 import pl.allegro.tech.hermes.consumers.consumer.offset.ConsumerPartitionAssignmentState;
 import pl.allegro.tech.hermes.consumers.consumer.offset.OffsetQueue;
 import pl.allegro.tech.hermes.consumers.consumer.rate.ConsumerRateLimiter;
@@ -65,6 +66,7 @@ public class KafkaMessageReceiverFactory implements ReceiverFactory {
     private final FilterChainFactory filterChainFactory;
     private final Trackers trackers;
     private final ConsumerPartitionAssignmentState consumerPartitionAssignmentState;
+    private final SubscriptionLoadReporter subscriptionLoadReporter;
 
     public KafkaMessageReceiverFactory(ConfigFactory configs,
                                        KafkaConsumerRecordToMessageConverterFactory messageConverterFactory,
@@ -73,7 +75,8 @@ public class KafkaMessageReceiverFactory implements ReceiverFactory {
                                        KafkaNamesMapper kafkaNamesMapper,
                                        FilterChainFactory filterChainFactory,
                                        Trackers trackers,
-                                       ConsumerPartitionAssignmentState consumerPartitionAssignmentState) {
+                                       ConsumerPartitionAssignmentState consumerPartitionAssignmentState,
+                                       SubscriptionLoadReporter subscriptionLoadReporter) {
         this.configs = configs;
         this.messageConverterFactory = messageConverterFactory;
         this.hermesMetrics = hermesMetrics;
@@ -82,6 +85,7 @@ public class KafkaMessageReceiverFactory implements ReceiverFactory {
         this.filterChainFactory = filterChainFactory;
         this.trackers = trackers;
         this.consumerPartitionAssignmentState = consumerPartitionAssignmentState;
+        this.subscriptionLoadReporter = subscriptionLoadReporter;
     }
 
     @Override
@@ -98,7 +102,9 @@ public class KafkaMessageReceiverFactory implements ReceiverFactory {
                 subscription,
                 configs.getIntProperty(Configs.CONSUMER_RECEIVER_POOL_TIMEOUT),
                 configs.getIntProperty(Configs.CONSUMER_RECEIVER_READ_QUEUE_CAPACITY),
-                consumerPartitionAssignmentState);
+                subscriptionLoadReporter,
+                consumerPartitionAssignmentState
+        );
 
 
         if (configs.getBooleanProperty(Configs.CONSUMER_RECEIVER_WAIT_BETWEEN_UNSUCCESSFUL_POLLS)) {

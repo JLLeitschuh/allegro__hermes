@@ -18,6 +18,7 @@ import pl.allegro.tech.hermes.common.kafka.KafkaTopics;
 import pl.allegro.tech.hermes.common.kafka.offset.PartitionOffset;
 import pl.allegro.tech.hermes.common.metric.HermesMetrics;
 import pl.allegro.tech.hermes.consumers.consumer.Message;
+import pl.allegro.tech.hermes.consumers.consumer.load.SubscriptionLoadReporter;
 import pl.allegro.tech.hermes.consumers.consumer.offset.ConsumerPartitionAssignmentState;
 import pl.allegro.tech.hermes.consumers.consumer.offset.OffsetCommitterConsumerRebalanceListener;
 import pl.allegro.tech.hermes.consumers.consumer.offset.SubscriptionPartitionOffset;
@@ -45,6 +46,7 @@ public class KafkaSingleThreadedMessageReceiver implements MessageReceiver {
     private final KafkaConsumerOffsetMover offsetMover;
 
     private final HermesMetrics metrics;
+    private final SubscriptionLoadReporter subscriptionLoadReporter;
     private volatile Subscription subscription;
 
     private final int pollTimeout;
@@ -58,10 +60,12 @@ public class KafkaSingleThreadedMessageReceiver implements MessageReceiver {
                                               Subscription subscription,
                                               int pollTimeout,
                                               int readQueueCapacity,
+                                              SubscriptionLoadReporter subscriptionLoadReporter,
                                               ConsumerPartitionAssignmentState partitionAssignmentState) {
         this.metrics = metrics;
         this.subscription = subscription;
         this.pollTimeout = pollTimeout;
+        this.subscriptionLoadReporter = subscriptionLoadReporter;
         this.partitionAssignmentState = partitionAssignmentState;
         this.consumer = consumer;
         this.readQueue = new ArrayBlockingQueue<>(readQueueCapacity);
@@ -85,6 +89,7 @@ public class KafkaSingleThreadedMessageReceiver implements MessageReceiver {
         try {
             if (readQueue.isEmpty()) {
                 ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(pollTimeout));
+                subscriptionLoadReporter.recordMessagesIn(subscription.getQualifiedName(), records.count());
                 try {
                     for (ConsumerRecord<byte[], byte[]> record : records) {
                         readQueue.add(convertToMessage(record));

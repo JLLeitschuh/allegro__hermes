@@ -1,6 +1,7 @@
 package pl.allegro.tech.hermes.consumers.consumer.rate;
 
 import pl.allegro.tech.hermes.api.Subscription;
+import pl.allegro.tech.hermes.consumers.consumer.rate.calculator.OutputRateCalculator;
 
 public interface ConsumerRateLimiter {
 
@@ -19,4 +20,6 @@ public interface ConsumerRateLimiter {
     void registerSuccessfulSending();
 
     void registerFailedSending();
+
+    OutputRateCalculator.Mode getRateMode();
 }

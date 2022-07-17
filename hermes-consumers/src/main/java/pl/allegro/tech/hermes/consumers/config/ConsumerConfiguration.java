@@ -19,6 +19,7 @@ import pl.allegro.tech.hermes.consumers.consumer.converter.MessageConverterResol
 import pl.allegro.tech.hermes.consumers.consumer.converter.NoOperationMessageConverter;
 import pl.allegro.tech.hermes.consumers.consumer.interpolation.MessageBodyInterpolator;
 import pl.allegro.tech.hermes.consumers.consumer.interpolation.UriInterpolator;
+import pl.allegro.tech.hermes.consumers.consumer.load.SubscriptionLoadReporter;
 import pl.allegro.tech.hermes.consumers.consumer.offset.ConsumerPartitionAssignmentState;
 import pl.allegro.tech.hermes.consumers.consumer.offset.OffsetQueue;
 import pl.allegro.tech.hermes.consumers.consumer.rate.ConsumerRateLimitSupervisor;
@@ -162,7 +163,8 @@ public class ConsumerConfiguration {
                                                                      FutureAsyncTimeout<MessageSendingResult> futureAsyncTimeout,
                                                                      UndeliveredMessageLog undeliveredMessageLog, Clock clock,
                                                                      InstrumentedExecutorServiceFactory instrumentedExecutorServiceFactory,
-                                                                     ConsumerAuthorizationHandler consumerAuthorizationHandler) {
+                                                                     ConsumerAuthorizationHandler consumerAuthorizationHandler,
+                                                                     SubscriptionLoadReporter subscriptionLoadReporter) {
         return new ConsumerMessageSenderFactory(
                 configFactory,
                 hermesMetrics,
@@ -172,7 +174,8 @@ public class ConsumerConfiguration {
                 undeliveredMessageLog,
                 clock,
                 instrumentedExecutorServiceFactory,
-                consumerAuthorizationHandler
+                consumerAuthorizationHandler,
+                subscriptionLoadReporter
         );
     }
 
