@@ -151,7 +151,7 @@ public class DynamicWorkBalancer implements WorkBalancer {
             if (!consumer.throughput().isLessOrEqualTo(capacityPerBin)) {
                 Throughput originalLoad = consumer.throughput();
 
-                Map<SubscriptionName, Throughput> tasksToBalance = consumer.tasks();
+                Map<SubscriptionName, Throughput> tasksToBalance = new HashMap<>(consumer.tasks());
                 consumer.removeAllTasks();
 
                 Throughput capacity = consumerLoads.stream()
