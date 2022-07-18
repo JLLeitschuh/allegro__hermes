@@ -115,9 +115,9 @@ public class DynamicWorkBalancer implements WorkBalancer {
             minimizeWorkload(state, transformer, consumerTasks);
             availableWorkStream(state, consumerTasks)
                     .forEach(transformer::addAssignment);
-            if (isValid(consumerLoads, state)) {
-                equalizeWorkload(consumerLoads, transformer);
-            }
+//            if (isValid(consumerLoads, state)) {
+//                equalizeWorkload(consumerLoads, transformer);
+//            }
         });
 
         return new WorkBalancingResult(balancedState, 0);
